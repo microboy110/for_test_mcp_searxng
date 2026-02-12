@@ -231,9 +231,38 @@ async def health():
     }
 
 
+# 在 main.py 中添加这两个端点
+@app.get("/tools")
+async def list_tools():
+    return {
+        "tools": [
+            {
+                "name": "web_search",
+                "description": "Search the web for real-time information",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string", "description": "The search keywords"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        ]
+    }
+
+
+@app.post("/call")
+async def call_tool(name: str, arguments: dict):
+    if name == "web_search":
+        # 内部调用你现有的搜索逻辑
+        return await perform_search(SearchRequest(**arguments))
+
+
+
 if __name__ == "__main__":
     import uvicorn
     p = int(os.getenv("PORT", 8080))
     auth_s = "ON" if MCP_REQUIRE_AUTH else "OFF"
     print(f"🚀 Started | Port: {p} | Auth: {auth_s}")
     uvicorn.run(app, host="0.0.0.0", port=p)
+
