@@ -17,8 +17,8 @@ import httpx
 logger = logging.getLogger("mcp_server")
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
-log_format = '%(asctime)s | %(levelname)s | %(method)s | %(path)s | %(client_ip)s | %(message)s'
-handler.setFormatter(logging.Formatter(log_format))
+log_fmt = '%(asctime)s | %(levelname)s | %(method)s | %(path)s | %(client_ip)s | %(message)s'
+handler.setFormatter(logging.Formatter(log_fmt))
 
 
 class ContextFilter(logging.Filter):
@@ -62,10 +62,14 @@ class SearchRequest(BaseModel):
 class Snippet(BaseModel):
     url: str
     title: str
-    snippet: str = Field(alias="content")
-    score: float
-    engine: str
+    # ✅ 修复重点：允许 content 为空，防止 Pydantic 校验失败
+    snippet: str = Field(default="", alias="content")
+    score: float = Field(default=0.0)
+    engine: str = Field(default="unknown")
     published_date: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
 
 
 class SearchResult(BaseModel):
@@ -86,23 +90,24 @@ class APIKeyAuth:
         if not self.require:
             return True
         if not API_KEYS:
-            raise HTTPException(status_code=500, detail="Server misconfigured: MCP_API_KEY is missing")
+            raise HTTPException(status_code=500, detail="Server API_KEY not set")
         if not x_api_key:
-            raise HTTPException(status_code=401, detail="Missing API key. Use header: X-API-Key")
+            raise HTTPException(status_code=401, detail="Missing X-API-Key")
 
         if not any(map(lambda k: self._consteq(k, x_api_key), API_KEYS)):
             raise HTTPException(status_code=403, detail="Invalid API key")
 
     @staticmethod
     def _consteq(a: str, b: str) -> bool:
-        return len(a) == len(b) and all(a[i] == b[i] for i in range(len(a)))
+        if len(a) != len(b):
+            return False
+        return all(c1 == c2 for c1, c2 in zip(a, b))
 
 
 # ========== FastAPI App ==========
 app = FastAPI(
     title="MCP Search Service",
-    description="Secure search with SearXNG and fallback support",
-    version="1.1.0"
+    version="1.1.1"
 )
 
 app.add_middleware(
@@ -139,9 +144,8 @@ async def log_requests(request: Request, call_next):
         raise
 
 
-@app.get("/", tags=["Health/Root"])
+@app.get("/", tags=["Health"])
 async def root():
-    """Root endpoint: Returns simple text 'fortest' for quick health check."""
     return Response(content="fortest", media_type="text/plain")
 
 
@@ -149,6 +153,7 @@ async def root():
 async def perform_search(request: SearchRequest) -> SearchResult:
     start_time = time.time()
     fallback_used = False
+    results = []
 
     try:
         params = {
@@ -162,41 +167,48 @@ async def perform_search(request: SearchRequest) -> SearchResult:
             params["q"] += " site:" + " OR site:".join(request.domains)
 
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{SEARXNG_URL}/search", params=params, follow_redirects=True)
+            resp = await client.get(
+                f"{SEARXNG_URL}/search",
+                params=params,
+                follow_redirects=True
+            )
             resp.raise_for_status()
             data = resp.json()
             results = data.get("results", [])
     except Exception as e:
         fallback_used = True
-        # 无感回溯
+        logger.warning(f"Search failed, using fallback: {str(e)}")
         results = [
-            {"url": "https://en.wikipedia.org/wiki/Main_Page",
-             "title": "Wikipedia 2026",
-             "content": "AI advancements...",
-             "score": 1.0, "engine": "fallback"}
+            {
+                "url": "https://en.wikipedia.org",
+                "title": "Search Fallback",
+                "content": "Temporary fallback results due to upstream error.",
+                "score": 0.0,
+                "engine": "system"
+            }
         ]
-        logger.warning(f"Fallback triggered for query='{request.query}': {str(e)}")
 
-    engine_used = list(set(r.get("engine", "") for r in results))
     clean_results = []
     for r in results[:request.max_results]:
-        if r.get("url"):
-            clean_results.append(Snippet(
-                url=r.get("url", "").split("#")[0],
-                title=(r.get("title") or "").strip(),
-                snippet=(r.get("content") or "")[:512],
-                score=r.get("score", 0.0),
-                engine=r.get("engine", "unknown")
-            ))
+        if not r.get("url"):
+            continue
+        # ✅ 使用 .get() 确保字段缺失时不会触发 Pydantic 错误
+        clean_results.append(Snippet(
+            url=r.get("url", "").split("#")[0],
+            title=(r.get("title") or "No Title").strip(),
+            content=(r.get("content") or r.get("snippet") or "")[:512],
+            score=float(r.get("score") or 0.0),
+            engine=str(r.get("engine") or "unknown")
+        ))
 
     duration = int((time.time() - start_time) * 1000)
-    query_hash = hashlib.sha256(request.query.encode()).hexdigest()[:8]
-    search_id = f"mcp_{query_hash}_{int(time.time())}"
+    q_hash = hashlib.sha256(request.query.encode()).hexdigest()[:8]
+    sid = f"mcp_{q_hash}_{int(time.time())}"
 
     return SearchResult(
-        search_id=search_id,
+        search_id=sid,
         results=clean_results,
-        engine_used=engine_used,
+        engine_used=list(set(s.engine for s in clean_results)),
         raw_response_size=len(results),
         request_duration_ms=duration,
         fallback_used=fallback_used
@@ -204,9 +216,12 @@ async def perform_search(request: SearchRequest) -> SearchResult:
 
 
 # ========== 端点 ==========
-@app.post("/search/web", response_model=SearchResult)
+@app.post(
+    "/search/web",
+    response_model=SearchResult,
+    dependencies=[Depends(APIKeyAuth(require=MCP_REQUIRE_AUTH))]
+)
 async def search_web(req: SearchRequest):
-    logger.info(f"Search requested: '{req.query}'")
     return await perform_search(req)
 
 
@@ -214,15 +229,13 @@ async def search_web(req: SearchRequest):
 async def health():
     return {
         "status": "healthy",
-        "searxng": SEARXNG_URL,
-        "auth_mode": "enabled" if MCP_REQUIRE_AUTH else "disabled",
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-    p = int(os.getenv("PORT", 8080))
-    auth_s = 'ON' if MCP_REQUIRE_AUTH else 'OFF'
-    print(f"🚀 MCP Server port {p} | Auth: {auth_s} | URL: {SEARXNG_URL}")
-    uvicorn.run(app, host="0.0.0.0", port=p)
+    port = int(os.getenv("PORT", 8080))
+    auth_status = "ON" if MCP_REQUIRE_AUTH else "OFF"
+    print(f"🚀 Started | Port: {port} | Auth: {auth_status}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
