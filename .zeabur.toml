@@ -1,0 +1,8 @@
+# Zeabur Buildpack 配置
+[build]
+builder = "python"
+
+[deploy]
+port = 8000
+
+# 不需要 extra 依赖（使用 Python 原生）
