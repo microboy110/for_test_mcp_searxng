@@ -258,11 +258,11 @@ async def call_tool(name: str, arguments: dict):
         return await perform_search(SearchRequest(**arguments))
 
 
-
 if __name__ == "__main__":
     import uvicorn
     p = int(os.getenv("PORT", 8080))
     auth_s = "ON" if MCP_REQUIRE_AUTH else "OFF"
     print(f"🚀 Started | Port: {p} | Auth: {auth_s}")
     uvicorn.run(app, host="0.0.0.0", port=p)
+
 
