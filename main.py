@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Request, Header, Depends
 from fastapi.responses import JSONResponse, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,7 +62,6 @@ class SearchRequest(BaseModel):
 class Snippet(BaseModel):
     url: str
     title: str
-    # ✅ 修复重点：允许 content 为空，防止 Pydantic 校验失败
     snippet: str = Field(default="", alias="content")
     score: float = Field(default=0.0)
     engine: str = Field(default="unknown")
@@ -107,7 +106,7 @@ class APIKeyAuth:
 # ========== FastAPI App ==========
 app = FastAPI(
     title="MCP Search Service",
-    version="1.1.1"
+    version="1.1.2"
 )
 
 app.add_middleware(
@@ -177,12 +176,12 @@ async def perform_search(request: SearchRequest) -> SearchResult:
             results = data.get("results", [])
     except Exception as e:
         fallback_used = True
-        logger.warning(f"Search failed, using fallback: {str(e)}")
+        logger.warning(f"Search failed: {str(e)}")
         results = [
             {
                 "url": "https://en.wikipedia.org",
-                "title": "Search Fallback",
-                "content": "Temporary fallback results due to upstream error.",
+                "title": "Fallback Result",
+                "content": "Service temporarily unavailable.",
                 "score": 0.0,
                 "engine": "system"
             }
@@ -192,7 +191,6 @@ async def perform_search(request: SearchRequest) -> SearchResult:
     for r in results[:request.max_results]:
         if not r.get("url"):
             continue
-        # ✅ 使用 .get() 确保字段缺失时不会触发 Pydantic 错误
         clean_results.append(Snippet(
             url=r.get("url", "").split("#")[0],
             title=(r.get("title") or "No Title").strip(),
@@ -235,7 +233,7 @@ async def health():
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8080))
-    auth_status = "ON" if MCP_REQUIRE_AUTH else "OFF"
-    print(f"🚀 Started | Port: {port} | Auth: {auth_status}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    p = int(os.getenv("PORT", 8080))
+    auth_s = "ON" if MCP_REQUIRE_AUTH else "OFF"
+    print(f"🚀 Started | Port: {p} | Auth: {auth_s}")
+    uvicorn.run(app, host="0.0.0.0", port=p)
