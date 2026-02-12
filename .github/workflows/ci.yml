@@ -34,7 +34,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --no-cache-dir flake8 fastapi uvicorn httpx pydantic
+          pip install --no-cache-dir flake8 mcp fastapi uvicorn httpx pydantic
 
       - name: Run Lint (flake8)
         run: |
