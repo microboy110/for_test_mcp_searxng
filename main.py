@@ -10,7 +10,7 @@ import httpx
 # MCP 核心依赖
 from mcp.server import Server
 from mcp.types import Tool, TextContent
-from mcp.server.fastapi import SseServerTransport
+from mcp.server.sse import SseServerTransport
 
 # ========== 配置与日志 ==========
 logger = logging.getLogger("mcp_server")
@@ -150,3 +150,4 @@ if __name__ == "__main__":
     import uvicorn
     p = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=p)
+
