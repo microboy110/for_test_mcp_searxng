@@ -1,6 +1,7 @@
-mcp
+mcp[fastapi]
 fastapi
 uvicorn
 httpx
 pydantic
+
 
