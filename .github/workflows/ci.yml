@@ -1,41 +1,27 @@
-# .github/workflows/ci.yml —— 增强版：支持手动触发 + CI/CD
-name: MCP Server CI/CD
+# .github/workflows/ci.yml
+name: MCP Server Manual Build & Push
 
-# 触发条件：push / PR / 手动触发
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # ⭐ 允许手动触发
+  workflow_dispatch:  # ⭐ 保留手动触发：用于控制镜像推送
     inputs:
-      environment:
-        description: 'Deploy environment'
+      tag_name:
+        description: 'Docker tag name (default is latest)'
         required: true
-        default: 'staging'
-        type: choice
-        options:
-          - dev
-          - staging
-          - prod
-      deploy:
-        description: 'Trigger deployment to Zeabur?'
-        required: true
-        default: 'false'
-        type: boolean
-      branch:
-        description: 'Branch to deploy (optional, defaults to main)'
-        required: false
-        default: 'main'
+        default: 'latest'
+        type: string
 
-# 全局变量
 env:
   PYTHON_VERSION: '3.11'
-  SEARXNG_URL: ${{ secrets.SEARXNG_URL || 'https://searxng.example.com' }}
+  REGISTRY: ghcr.io
 
 jobs:
+  # 1. 自动运行的代码质量检查
   ci-checks:
-    name: 🧪 CI Checks (Test/Lint)
+    name: 🧪 CI Checks
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -48,108 +34,56 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --no-cache-dir flake8 pytest pytest-asyncio
-          pip install --no-cache-dir fastapi uvicorn httpx pydantic
+          pip install --no-cache-dir flake8 fastapi uvicorn httpx pydantic
 
       - name: Run Lint (flake8)
         run: |
           flake8 main.py --count --show-source --statistics --max-line-length=120
 
-      - name: Check imports are valid
+      - name: Check imports
         run: |
           python -c "from main import app; print('✅ Imports OK')"
 
-      - name: Run fastapi test (basic)
-        # ✅ 修复重点：使用多行块语法避开 f-string 中的反斜杠转义限制
-        run: |
-          python -c "
-          import os
-          from main import app, SearchRequest
-          print('✅ FastAPI app instance created')
-          
-          # 验证 Pydantic 模型
-          req = SearchRequest(query='test')
-          print(f'✅ Sample request query: {req.query}')
-          
-          # 验证环境变量加载
-          url = os.getenv('SEARXNG_URL', 'not set')
-          print(f'✅ SEARXNG_URL state: {url}')
-          "
-
-      - name: Run pytest (placeholder)
-        run: |
-          echo 'No tests yet — add tests/ directory later'
-
+  # 2. 手动触发的 Docker 构建与推送
   build-and-push:
     name: 🐳 Docker Build & Push
     needs: ci-checks
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true' }}
+    # ⭐ 仅在手动触发 (workflow_dispatch) 时运行
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata for Docker
+      - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
           tags: |
-            type=raw,value=latest
+            type=raw,value=${{ github.event.inputs.tag_name }}
             type=sha,prefix=
 
-      - name: Build and push Docker image
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
+          # 自动处理仓库名大写转小写问题
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  deploy-zeabur:
-    name: ☁️ Deploy to Zeabur
-    needs: [ ci-checks, build-and-push ]
-    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true' }}
-    runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Zeabur CLI
-        run: npm install -g @zeabur/cli
-
-      - name: Configure Zeabur
-        run: |
-          zeabur login --token ${{ secrets.ZEABUR_TOKEN }}
-          echo "✅ Zeabur configured"
-
-      - name: Deploy to Zeabur
-        env:
-          SEARXNG_URL: ${{ env.SEARXNG_URL }}
-        run: |
-          ZEABUR_SERVICE_NAME="${{ secrets.ZEABUR_SERVICE_NAME }}"
-          if [ -z "$ZEABUR_SERVICE_NAME" ]; then
-            echo "❌ Error: ZEABUR_SERVICE_NAME secret is not set"
-            exit 1
-          fi
-          zeabur deploy --service "$ZEABUR_SERVICE_NAME"
-          echo "✅ Deployed to: ${{ github.event.inputs.environment }}"
