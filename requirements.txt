@@ -1,7 +1,10 @@
+mcp
 mcp[fastapi]
+sse-starlette
 fastapi
 uvicorn
 httpx
 pydantic
+
 
 
