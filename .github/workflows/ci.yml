@@ -7,7 +7,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # ⭐ 新增：允许手动触发
+  workflow_dispatch:  # ⭐ 允许手动触发
     inputs:
       environment:
         description: 'Deploy environment'
@@ -28,7 +28,7 @@ on:
         required: false
         default: 'main'
 
-# 全局变量：避免重复定义
+# 全局变量
 env:
   PYTHON_VERSION: '3.11'
   SEARXNG_URL: ${{ secrets.SEARXNG_URL || 'https://searxng.example.com' }}
@@ -60,29 +60,34 @@ jobs:
           python -c "from main import app; print('✅ Imports OK')"
 
       - name: Run fastapi test (basic)
+        # ✅ 修复重点：使用多行块语法避开 f-string 中的反斜杠转义限制
         run: |
           python -c "
-          import asyncio
-          from main import app, perform_search, SearchRequest
+          import os
+          from main import app, SearchRequest
           print('✅ FastAPI app instance created')
+          
+          # 验证 Pydantic 模型
           req = SearchRequest(query='test')
-          print(f'✅ Sample request: {req.query}')
-          print(f'✅ SearXNG URL: {app.get(\'SEARXNG_URL\') or \'not loaded yet\' if isinstance(app, dict) else \'OK\'}')
+          print(f'✅ Sample request query: {req.query}')
+          
+          # 验证环境变量加载
+          url = os.getenv('SEARXNG_URL', 'not set')
+          print(f'✅ SEARXNG_URL state: {url}')
           "
 
-      - name: Run pytest (if tests added later)
+      - name: Run pytest (placeholder)
         run: |
-          # placeholder — add `pytest tests/` when tests added
-          echo 'No tests yet — add tests/ later'
+          echo 'No tests yet — add tests/ directory later'
 
   build-and-push:
-    name: 🐳 Docker Build & Push (Optional)
+    name: 🐳 Docker Build & Push
     needs: ci-checks
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write  # ⚠️ 允许.push to GitHub Container Registry (ghcr.io)
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,7 +125,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy-zeabur:
-    name: ☁️ Deploy to Zeabur (Manual)
+    name: ☁️ Deploy to Zeabur
     needs: [ ci-checks, build-and-push ]
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy == 'true' }}
     runs-on: ubuntu-latest
@@ -141,15 +146,10 @@ jobs:
         env:
           SEARXNG_URL: ${{ env.SEARXNG_URL }}
         run: |
-          # 注意：这里需要预先创建服务，并记录 service 名称
-          # 示例：zeabur services create --dir ./ --name [your-service-name]
-          # 如果服务已存在，可直接 zeabur deploy
           ZEABUR_SERVICE_NAME="${{ secrets.ZEABUR_SERVICE_NAME }}"
-
           if [ -z "$ZEABUR_SERVICE_NAME" ]; then
-            echo "❌ Error: SEABUR_SERVICE_NAME secret is not set"
+            echo "❌ Error: ZEABUR_SERVICE_NAME secret is not set"
             exit 1
           fi
-
           zeabur deploy --service "$ZEABUR_SERVICE_NAME"
-          echo "✅ Deployed to environment: ${{ github.event.inputs.environment }}"
+          echo "✅ Deployed to: ${{ github.event.inputs.environment }}"
